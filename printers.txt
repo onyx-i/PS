@@ -1,0 +1,596 @@
+#region Menu Functions
+function Show-MainMenu {
+    param([boolean]$IsAdmin)
+    Clear-Host
+    Write-Host "============================================="
+    Write-Host "      PowerShell Printer Management Tool     "
+    Write-Host "=============================================" -ForegroundColor Cyan
+    if ($IsAdmin) {
+        Write-Host "Status: Running with Administrator privileges." -ForegroundColor Green
+    } else {
+        Write-Host "Status: Running with standard privileges. Most options will fail." -ForegroundColor Yellow
+    }
+    Write-Host "---------------------------------------------"
+    Write-Host "1: Printer Management"
+    Write-Host "2: Driver & Port Management"
+    Write-Host "3: Diagnostics & Tools"
+    Write-Host "4: Download Kyocera Driver"
+    Write-Host "Q: Quit"
+    Write-Host "============================================="
+}
+
+function Show-PrinterMenu {
+    Clear-Host
+    Write-Host "============================================="
+    Write-Host "             Printer Management              "
+    Write-Host "=============================================" -ForegroundColor Cyan
+    
+    Write-Host "1: List Printers (Basic Info)"
+    Write-Host "2: View Detailed Printer Properties"
+    Write-Host "3: Set Default Printer"
+    Write-Host "4: Rename a Printer"
+    Write-Host "5: Delete a Printer"
+    Write-Host "B: Back to Main Menu"
+    Write-Host "---------------------------------------------"
+}
+
+function Show-DriverPortMenu {
+    Clear-Host
+    Write-Host "============================================="
+    Write-Host "           Driver & Port Management          "
+    Write-Host "=============================================" -ForegroundColor Cyan
+ 
+    Write-Host "1: List Printer Drivers"
+    Write-Host "2: Delete a Printer Driver"
+    Write-Host "3: List Printer Ports"
+    Write-Host "4: Create a new TCP/IP Printer Port"
+    Write-Host "B: Back to Main Menu"
+    Write-Host "---------------------------------------------"
+}
+
+function Show-DiagnosticsMenu {
+    Clear-Host
+    Write-Host "============================================="
+    Write-Host "             Diagnostics & Tools             "
+    Write-Host "=============================================" -ForegroundColor Cyan
+    Write-Host "1: Manage Print Spooler Service"
+    Write-Host "2: Print a Test Page"
+    Write-Host "3: Clear Jobs for a Specific Printer"
+    Write-Host "4: Clear ALL Jobs from ALL Printers"
+    Write-Host "5: Ping a Printer's IP Address"
+    Write-Host "6: View Recent Print Service Errors"
+    Write-Host "B: Back to Main Menu"
+    Write-Host "---------------------------------------------"
+}
+#endregion
+
+#region Selection & Helper Functions
+function Select-FromList {
+    [CmdletBinding()]
+    param(
+        [string]$Prompt,
+        [object[]]$Collection,
+        [string]$DisplayProperty
+    )
+
+    Clear-Host
+    Write-Host "--- $Prompt ---" -ForegroundColor Yellow
+    
+    if (-not $Collection) {
+        Write-Host "No items found to select." -ForegroundColor Red
+        Start-Sleep -Seconds 3
+        return $null
+    }
+
+    for ($i = 0; $i -lt $Collection.Count; $i++) {
+        Write-Host ('{0,3}: {1}' -f ($i + 1), $Collection[$i].($DisplayProperty))
+    }
+    Write-Host "  C: Cancel"
+
+    while ($true) {
+        $choice = Read-Host "`nEnter your choice (number)"
+        if ($choice.ToUpper() -eq 'C') { return $null }
+  
+        if ($choice -match '^\d+$') {
+            $selection = [int]$choice - 1
+            if ($selection -ge 0 -and $selection -lt $Collection.Count) {
+                return $Collection[$selection]
+            }
+        }
+        Write-Host "Invalid selection. Please enter a number from the list." -ForegroundColor Red
+    }
+}
+#endregion
+
+#region Core Functions
+function List-Printers {
+    Clear-Host
+    Write-Host "--- All Installed Printers ---" -ForegroundColor Yellow
+    try {
+        Write-Host "  > COMMAND: Get-Printer | Select-Object Name, PortName, PrinterStatus | Format-Table -AutoSize" -ForegroundColor Gray
+        Get-Printer | Select-Object Name, PortName, PrinterStatus | Format-Table -AutoSize
+    } catch {
+        Write-Host "Error: Could not retrieve printers. Ensure the Print Spooler service is running." -ForegroundColor Red
+    }
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function View-PrinterProperties {
+    $printer = Select-FromList -Prompt "Select a Printer to View Its Properties" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+
+    Clear-Host
+    Write-Host "--- Detailed Properties for '$($printer.Name)' ---" -ForegroundColor Yellow
+    Write-Host "  > COMMAND: Get-Printer -Name '$($printer.Name)' | Format-List *" -ForegroundColor Gray
+    Get-Printer -Name $printer.Name | Format-List *
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function Set-DefaultPrinter {
+    $printer = Select-FromList -Prompt "Select a Printer to Set as Default" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+    
+    Write-Host "Setting '$($printer.Name)' as the default printer..." -ForegroundColor Cyan
+    try {
+        $command = "(Get-WmiObject -Class Win32_Printer -Filter ""Name='$($printer.Name)'"").SetDefaultPrinter()"
+        Write-Host "  > COMMAND: $command" -ForegroundColor Gray
+        Invoke-Expression $command | Out-Null
+        Write-Host "Successfully set '$($printer.Name)' as the default printer." -ForegroundColor Green
+    } catch {
+        Write-Host "Error setting default printer: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    Start-Sleep -Seconds 3
+}
+
+function Print-TestPage {
+    $printer = Select-FromList -Prompt "Select a Printer to Send a Test Page To" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+
+    Write-Host "Sending test page to '$($printer.Name)'..." -ForegroundColor Cyan
+    try {
+        $command = "(Get-WmiObject -Class Win32_Printer -Filter ""Name='$($printer.Name)'"").PrintTestPage()"
+        Write-Host "  > COMMAND: $command" -ForegroundColor Gray
+        Invoke-Expression $command | Out-Null
+        Write-Host "Test page sent successfully." -ForegroundColor Green
+        Write-Host "Note: This does not confirm the page printed, only that the command was accepted." -ForegroundColor Yellow
+    } catch {
+        Write-Host "Error sending test page: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    Start-Sleep -Seconds 4
+}
+
+
+function Clear-PrintJobs {
+    $printer = Select-FromList -Prompt "Select a Printer to Clear Its Jobs" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+
+    $printerName = $printer.Name
+    Write-Host "Checking for print jobs on '$printerName'..." -ForegroundColor Cyan
+    Write-Host "  > CHECKING: Get-PrintJob -PrinterName '$printerName'" -ForegroundColor Gray
+    $jobs = Get-PrintJob -PrinterName $printerName -ErrorAction SilentlyContinue
+    if (-not $jobs) {
+        Write-Host "No print jobs found for '$printerName'." -ForegroundColor Green
+        Start-Sleep -Seconds 3; return
+    }
+
+    $jobCount = ($jobs | Measure-Object).Count
+    $confirmation = Read-Host "Found $jobCount job(s) for '$printerName'. Are you sure you want to clear them all? (Y/N)"
+
+    if ($confirmation.ToUpper() -eq 'Y') {
+        try {
+            Write-Host "Clearing $jobCount job(s)..." -ForegroundColor Cyan
+            Write-Host "  > COMMAND: Get-PrintJob -PrinterName '$printerName' | Remove-PrintJob" -ForegroundColor Gray
+            $jobs | Remove-PrintJob
+            Write-Host "Successfully cleared all print jobs for '$printerName'." -ForegroundColor Green
+        } catch {
+            Write-Host "An error occurred while trying to clear the print jobs: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else { Write-Host "Operation cancelled." }
+    Start-Sleep -Seconds 3
+}
+
+function Rename-SpecificPrinter {
+    $printer = Select-FromList -Prompt "Select a Printer to Rename" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+
+    $oldName = $printer.Name
+    $newName = Read-Host "Enter the new name for '$oldName'"
+
+    if ([string]::IsNullOrWhiteSpace($newName)) { Write-Host "Error: New name cannot be empty." -ForegroundColor Red; Start-Sleep -Seconds 2; return }
+    if ($newName -eq $oldName) { Write-Host "Error: New name cannot be the same as the old name." -ForegroundColor Red; Start-Sleep -Seconds 2; return }
+
+    $confirmation = Read-Host "Are you sure you want to rename '$oldName' to '$newName'? (Y/N)"
+    if ($confirmation.ToUpper() -eq 'Y') {
+        try {
+            Write-Host "Renaming printer..." -ForegroundColor Cyan
+            Write-Host "  > COMMAND: Rename-Printer -Name '$oldName' -NewName '$newName'" -ForegroundColor Gray
+            Rename-Printer -Name $oldName -NewName $newName
+            Write-Host "Successfully renamed printer to '$newName'." -ForegroundColor Green
+        } catch {
+            Write-Host "An error occurred while trying to rename the printer: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else { Write-Host "Operation cancelled." }
+    Start-Sleep -Seconds 3
+}
+
+function Clear-All-PrintJobs {
+    Clear-Host
+    Write-Host "--- Clear ALL Print Jobs from ALL Printers ---" -ForegroundColor Yellow
+    $confirmation = Read-Host "WARNING: This will attempt to clear every print job on this computer. Are you sure? (Y/N)"
+
+    if ($confirmation.ToUpper() -eq 'Y') {
+        $printers = Get-Printer -ErrorAction SilentlyContinue
+        if (-not $printers) { Write-Host "No printers found."; Start-Sleep -Seconds 2; return }
+        
+        Write-Host "Processing all printers..." -ForegroundColor Cyan
+        $jobsCleared = 0
+        foreach ($p in $printers) {
+            Write-Host "  > CHECKING: Get-PrintJob -PrinterName '$($p.Name)'" -ForegroundColor Gray
+            $jobs = Get-PrintJob -PrinterName $p.Name -ErrorAction SilentlyContinue
+            if ($jobs) {
+                Write-Host "  - Clearing $($jobs.Count) job(s) from $($p.Name)..." -ForegroundColor Cyan
+                Write-Host "    > COMMAND: Get-PrintJob -PrinterName '$($p.Name)' | Remove-PrintJob" -ForegroundColor Gray
+                $jobs | Remove-PrintJob -ErrorAction SilentlyContinue
+                $jobsCleared += $jobs.Count
+            } else { Write-Host "  - No jobs found for $($p.Name)." }
+        }
+        Write-Host "`nBulk clear operation complete. A total of $jobsCleared job(s) were cleared." -ForegroundColor Green
+    } else { Write-Host "Operation cancelled." }
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function Delete-SpecificPrinter {
+    while ($true) {
+        # The Select-FromList function is called each time the loop runs, refreshing the printer list.
+        $printer = Select-FromList -Prompt "Select a Printer to DELETE (or C to return to menu)" -Collection (Get-Printer) -DisplayProperty "Name"
+        
+        # If the user selects 'C' to cancel, $printer will be null, and the function returns to the previous menu.
+        if (-not $printer) { return }
+
+        $printerName = $printer.Name
+        $confirmation = Read-Host "Are you absolutely sure you want to PERMANENTLY delete '$printerName'? This cannot be undone. (Y/N)"
+
+        if ($confirmation.ToUpper() -eq 'Y') {
+            try {
+                Write-Host "Attempting to delete '$printerName'..." -ForegroundColor Cyan
+                Write-Host "  > COMMAND: Remove-Printer -Name '$printerName'" -ForegroundColor Gray
+                Remove-Printer -Name $printerName
+                Write-Host "Successfully deleted printer '$printerName'." -ForegroundColor Green
+            } catch {
+                Write-Host "An error occurred while trying to delete the printer: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        } else { 
+            Write-Host "Operation cancelled." 
+        }
+
+        # Pauses for user confirmation before looping again.
+        Write-Host "`nPress Enter to continue..."
+        Read-Host | Out-Null
+    }
+}
+
+function Manage-Spooler {
+    while ($true) {
+        Clear-Host
+        Write-Host "  > CHECKING: Get-Service -Name Spooler" -ForegroundColor Gray
+        $service = Get-Service -Name Spooler -ErrorAction SilentlyContinue
+        Write-Host "============================================="
+        Write-Host "        Print Spooler Service Manager      "
+        Write-Host "============================================="
+        Write-Host "Current Status: $($service.Status)" -ForegroundColor $(if ($service.Status -eq 'Running') {'Green'} else {'Red'})
+        Write-Host "---------------------------------------------"
+        Write-Host "1: Stop Service"
+        Write-Host "2: Start Service"
+        Write-Host "3: Restart Service"
+        Write-Host "B: Back to Main Menu"
+        Write-Host "---------------------------------------------"
+        $choice = Read-Host "Your choice"
+
+        try {
+            switch ($choice.ToUpper()) {
+                '1' { Write-Host "Stopping..."; Write-Host " > COMMAND: Stop-Service..." -ForegroundColor Gray; Stop-Service -Name Spooler -Force; Write-Host "Done." -ForegroundColor Green }
+                '2' { Write-Host "Starting..."; Write-Host " > COMMAND: Start-Service..." -ForegroundColor Gray; Start-Service -Name Spooler; Write-Host "Done." -ForegroundColor Green }
+                '3' { Write-Host "Restarting..."; Write-Host " > COMMAND: Restart-Service..." -ForegroundColor Gray; Restart-Service -Name Spooler -Force; Write-Host "Done." -ForegroundColor Green }
+                'B' { return }
+                default { Write-Host "Invalid option." -ForegroundColor Red }
+            }
+        } catch { Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red }
+        Start-Sleep -Seconds 1
+    }
+}
+
+function Test-PrinterConnection {
+    $printer = Select-FromList -Prompt "Select a Network Printer to Ping" -Collection (Get-Printer) -DisplayProperty "Name"
+    if (-not $printer) { return }
+    
+    $port = Get-PrinterPort -Name $printer.PortName -ErrorAction SilentlyContinue
+    $ipAddress = $port.ComputerName
+    
+    if (-not $ipAddress) {
+        Write-Host "Could not determine an IP address for '$($printer.Name)' on port '$($printer.PortName)'." -ForegroundColor Yellow
+        Write-Host "This test only works for standard TCP/IP ports."
+        Start-Sleep -Seconds 4; return
+    }
+    
+    Clear-Host
+    Write-Host "Pinging '$($printer.Name)' at IP address '$ipAddress'..." -ForegroundColor Cyan
+    Write-Host "  > COMMAND: Test-Connection -ComputerName $ipAddress -Count 4" -ForegroundColor Gray
+    Test-Connection -ComputerName $ipAddress -Count 4
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function View-PrinterEvents {
+    Clear-Host
+    Write-Host "--- Recent Print Service Errors ---" -ForegroundColor Yellow
+    $logName = 'Microsoft-Windows-PrintService/Admin'
+    $count = Read-Host "How many recent events would you like to see? (Default: 10)"
+    if (-not ($count -match '^\d+$')) { $count = 10 }
+    
+    Write-Host "Searching for the last $count error events in the '$logName' log..." -ForegroundColor Cyan
+    Write-Host "  > COMMAND: Get-WinEvent -LogName '$logName' -MaxEvents $count -FilterXPath '*[System/Level=2]'" -ForegroundColor Gray
+    
+    $events = Get-WinEvent -LogName $logName -MaxEvents $count -FilterXPath "*[System/Level=2]" -ErrorAction SilentlyContinue
+    
+    if ($events) {
+        $events | Format-Table TimeCreated, Id, Message -Wrap -AutoSize
+    } else {
+        Write-Host "No error events found in the PrintService log." -ForegroundColor Green
+    }
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function List-PrinterDrivers {
+    Clear-Host
+    Write-Host "--- All Installed Printer Drivers ---" -ForegroundColor Yellow
+    Write-Host "  > COMMAND: Get-PrinterDriver | Format-Table Name, MajorVersion, Manufacturer" -ForegroundColor Gray
+    Get-PrinterDriver | Format-Table Name, MajorVersion, Manufacturer -AutoSize
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function Delete-PrinterDriver {
+    $driver = Select-FromList -Prompt "Select a Driver to DELETE" -Collection (Get-PrinterDriver) -DisplayProperty "Name"
+    if (-not $driver) { return }
+
+    $confirmation = Read-Host "WARNING: Deleting a driver may cause printers to stop working. Are you sure you want to delete '$($driver.Name)'? (Y/N)"
+    if ($confirmation.ToUpper() -eq 'Y') {
+        try {
+            Write-Host "Deleting driver '$($driver.Name)'..." -ForegroundColor Cyan
+            Write-Host "  > COMMAND: Remove-PrinterDriver -Name '$($driver.Name)'" -ForegroundColor Gray
+            Remove-PrinterDriver -Name $driver.Name
+            Write-Host "Successfully deleted driver." -ForegroundColor Green
+        } catch {
+            Write-Host "Error deleting driver: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else { Write-Host "Operation cancelled." }
+    Start-Sleep -Seconds 3
+}
+
+function List-PrinterPorts {
+    Clear-Host
+    Write-Host "--- All Installed Printer Ports ---" -ForegroundColor Yellow
+    Write-Host "  > COMMAND: Get-PrinterPort | Sort-Object Name | Format-Table" -ForegroundColor Gray
+    Get-PrinterPort | Sort-Object Name | Format-Table
+    Write-Host "`nPress Enter to return."
+    Read-Host | Out-Null
+}
+
+function New-TcpIpPort {
+    Clear-Host
+    Write-Host "--- Create New Standard TCP/IP Port ---" -ForegroundColor Yellow
+    $ipAddress = Read-Host "Enter the IP Address for the new port"
+    try {
+        [System.Net.IPAddress]$ipAddress | Out-Null
+    } catch {
+        Write-Host "Invalid IP address format." -ForegroundColor Red
+        Start-Sleep -Seconds 2; return
+    }
+    
+    $portName = "IP_$ipAddress"
+    Write-Host "The new port will be named '$portName'." -ForegroundColor Cyan
+    $confirmation = Read-Host "Are you sure you want to create this port? (Y/N)"
+    if ($confirmation.ToUpper() -eq 'Y') {
+        try {
+            Write-Host "Creating port..." -ForegroundColor Cyan
+            Write-Host "  > COMMAND: Add-PrinterPort -Name '$portName' -PrinterHostAddress '$ipAddress'" -ForegroundColor Gray
+            Add-PrinterPort -Name $portName -PrinterHostAddress $ipAddress
+            Write-Host "Successfully created port '$portName'." -ForegroundColor Green
+        } catch {
+            Write-Host "Error creating port: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "The port may already exist." -ForegroundColor Yellow
+        }
+    } else { Write-Host "Operation cancelled." }
+    Start-Sleep -Seconds 3
+}
+
+function Invoke-KyoceraDriverDownload {
+    # --- Helper Function (Internal) ---
+    function Get-UserProfiles {
+        # Get all directories in C:\Users, ignore errors for permissions etc.
+        $profiles = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue | Where-Object {
+            # Filter out common non-user profiles
+            $_.Name -notin @('Public', 'Default', 'All Users')
+        }
+
+        if (-not $profiles) { return $null }
+
+        # Create a list of custom objects to match the format the rest of the function expects
+        $userList = foreach ($profile in $profiles) {
+            [PSCustomObject]@{
+                Username  = $profile.Name
+                LogonTime = "N/A (Profile Folder)" # Placeholder text
+            }
+        }
+        return $userList
+    }
+
+    # --- Step 1: User Selection Screen ---
+    Clear-Host
+    Write-Host "--- Kyocera Driver Downloader ---" -ForegroundColor Yellow
+    Write-Host "STEP 1: Select a target user`n"
+    
+    $userList = Get-UserProfiles
+    if (-not $userList) {
+        Write-Host "No user profiles found in C:\Users." -ForegroundColor Red
+        Start-Sleep -Seconds 3
+        return # Exit the function
+    }
+
+    for ($i = 0; $i -lt $userList.Count; $i++) {
+        $displayLine = "{0,3}. {1,-20} | Status: {2}" -f ($i + 1), $userList[$i].Username, $userList[$i].LogonTime
+        Write-Host $displayLine
+    }
+
+    do {
+        $input = Read-Host "`nEnter the number for the target user"
+        if (($input -match '^\d+$') -and ([int]$input -ge 1) -and ([int]$input -le $userList.Count)) {
+            $validInput = $true
+            $selection = [int]$input
+        } else {
+            Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+        }
+    } while (-not $validInput)
+
+    $selectedUser = $userList[$selection - 1].Username
+
+    # --- Step 2: Confirmation Screen ---
+    Clear-Host
+    Write-Host "--- Kyocera Driver Downloader ---" -ForegroundColor Yellow
+    Write-Host "STEP 2: Confirm Download for User '$selectedUser'`n"
+
+    $downloadDirectory = "C:\Users\$selectedUser\Downloads"
+    $fileName = "KX_DRIVER.exe"
+    $downloadPath = Join-Path $downloadDirectory -ChildPath $fileName
+    $alternateDownloadPath = Join-Path $downloadDirectory -ChildPath "KX DRIVER.exe"
+
+    Write-Host "Target Path: $downloadPath`n"
+    Write-Host "Performing pre-download checks..."
+    
+    # Check 1: Directory
+    if (-not (Test-Path -Path $downloadDirectory)) {
+        Write-Host " - Directory Status: Not Found. Will be created." -ForegroundColor Yellow
+    } else {
+        Write-Host " - Directory Status: Exists." -ForegroundColor Green
+    }
+    
+    # Check 2: Write Access
+    try {
+        $tempFile = Join-Path $downloadDirectory -ChildPath ([System.IO.Path]::GetRandomFileName())
+        New-Item -Path $tempFile -ItemType File -Force -ErrorAction Stop | Out-Null
+        Remove-Item -Path $tempFile -Force -ErrorAction Stop
+        Write-Host " - Write Access:     Confirmed." -ForegroundColor Green
+    } catch {
+        Write-Host " - Write Access:     DENIED. Cannot proceed." -ForegroundColor Red
+        Start-Sleep -Seconds 3
+        return # Exit the function
+    }
+    
+    # Check 3: File Exists (check for both names)
+    if ((Test-Path -Path $downloadPath) -or (Test-Path -Path $alternateDownloadPath)) {
+        Write-Host " - File Status:      Exists. (Will be overwritten)" -ForegroundColor Yellow
+    } else {
+        Write-Host " - File Status:      Does not exist." -ForegroundColor Green
+    }
+
+    $confirmation = Read-Host "`nAll checks complete. Proceed with download? (y/n)"
+    if ($confirmation -ne 'y') {
+        Write-Host "`nDownload cancelled by user." -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+        return # Exit the function
+    }
+
+    # --- Step 3: Download and Finish ---
+    Clear-Host
+    Write-Host "--- Kyocera Driver Downloader ---" -ForegroundColor Yellow
+    Write-Host "STEP 3: Downloading...`n"
+    
+    $url = "https://www.kyoceradocumentsolutions.us/content/download-center-americas/us/drivers/drivers/KX_DRIVER_exe.download.exe"
+
+    try {
+        # Ensure directory exists before downloading
+        if (-not (Test-Path -Path $downloadDirectory)) { New-Item -Path $downloadDirectory -ItemType Directory -Force | Out-Null }
+        
+        Invoke-WebRequest -Uri $url -OutFile $downloadPath -ErrorAction Stop
+        Write-Host "✅ Download complete!" -ForegroundColor Green
+        Write-Host "File saved to $downloadPath"
+    }
+    catch {
+        Write-Host "❌ FAILED to download the file. Error: $_" -ForegroundColor Red
+    }
+    Write-Host "`nPress Enter to return to the main menu."
+    Read-Host | Out-Null
+}
+#endregion
+
+#region Main Script Body & Loop
+# --- Admin Check ---
+Write-Host "Checking administrator status..." -ForegroundColor Cyan
+Write-Host "  > CHECK: ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrator')" -ForegroundColor Gray
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Start-Sleep -Seconds 1
+
+# --- Main Loop ---
+do {
+    Show-MainMenu -IsAdmin $isAdmin
+    $mainSelection = Read-Host "Your choice"
+
+    switch ($mainSelection.ToUpper()) {
+        '1' { # Printer Management
+            $back = $false
+            while (-not $back) {
+                Show-PrinterMenu
+                $subSelection = Read-Host "Your choice"
+                switch ($subSelection.ToUpper()) {
+                    '1' { List-Printers }
+                    '2' { View-PrinterProperties }
+                    '3' { Set-DefaultPrinter }
+                    '4' { Rename-SpecificPrinter }
+                    '5' { Delete-SpecificPrinter }
+                    'B' { $back = $true }
+                    default { Write-Host "Invalid selection." -ForegroundColor Red; Start-Sleep 2 }
+                }
+            }
+        }
+        '2' { # Driver & Port Management
+            $back = $false
+            while (-not $back) {
+                Show-DriverPortMenu
+                $subSelection = Read-Host "Your choice"
+                switch ($subSelection.ToUpper()) {
+                    '1' { List-PrinterDrivers }
+                    '2' { Delete-PrinterDriver }
+                    '3' { List-PrinterPorts }
+                    '4' { New-TcpIpPort }
+                    'B' { $back = $true }
+                    default { Write-Host "Invalid selection." -ForegroundColor Red; Start-Sleep 2 }
+                }
+            }
+        }
+        '3' { # Diagnostics & Tools
+            $back = $false
+            while (-not $back) {
+                Show-DiagnosticsMenu
+                $subSelection = Read-Host "Your choice"
+                switch ($subSelection.ToUpper()) {
+                    '1' { Manage-Spooler }
+                    '2' { Print-TestPage }
+                    '3' { Clear-PrintJobs }
+                    '4' { Clear-All-PrintJobs }
+                    '5' { Test-PrinterConnection }
+                    '6' { View-PrinterEvents }
+                    'B' { $back = $true }
+                    default { Write-Host "Invalid selection." -ForegroundColor Red; Start-Sleep 2 }
+                }
+            }
+        }
+        '4' { Invoke-KyoceraDriverDownload }
+        'Q' { Write-Host "Exiting tool." }
+        default { Write-Host "Invalid selection." -ForegroundColor Red; Start-Sleep 2 }
+    }
+} while ($mainSelection.ToUpper() -ne 'Q')
+#endregion
