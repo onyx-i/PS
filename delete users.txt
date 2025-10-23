@@ -1,0 +1,150 @@
+# --- Must be run as Administrator ---
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "ERROR: This script must be run as an Administrator." -ForegroundColor Red
+    Write-Host "Please re-launch this script from an elevated PowerShell prompt."
+    Start-Sleep -Seconds 10
+    exit
+}
+
+# --- Helper function to calculate folder size ---
+function Get-FolderSize {
+    param (
+        [string]$Path
+    )
+    
+    try {
+        # Get all items, force to include hidden/system files, sum up the 'Length' (size)
+        $sizeBytes = (Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+        
+        # Format the size for display
+        if ($sizeBytes -gt 1GB) {
+            $sizeString = "{0:N2} GB" -f ($sizeBytes / 1GB)
+        } elseif ($sizeBytes -gt 1MB) {
+            $sizeString = "{0:N2} MB" -f ($sizeBytes / 1MB)
+        } else {
+            $sizeString = "{0:N2} KB" -f ($sizeBytes / 1KB)
+        }
+        
+        return [PSCustomObject]@{
+            Bytes      = $sizeBytes
+            SizeString = $sizeString
+        }
+    } catch {
+        return [PSCustomObject]@{
+            Bytes      = 0
+            SizeString = "Error (Access Denied)"
+        }
+    }
+}
+
+# --- Main script loop ---
+while ($true) {
+    Clear-Host
+    Write-Host "--- User Profile Manager ---" -ForegroundColor Yellow
+    Write-Host "`nCalculating user profile folder sizes..."
+    Write-Host "This may take several minutes depending on disk speed and file counts."
+    
+    $userProfiles = @()
+    
+    # Get user profiles from C:\Users, filtering out system/public ones
+    $profiles = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -notin @('Public', 'Default', 'All Users', 'Default User')
+    }
+    
+    if (-not $profiles) {
+        Write-Host "No user profiles found in C:\Users." -ForegroundColor Red
+        Start-Sleep -Seconds 5
+        break
+    }
+
+    # Build the list of users and their folder sizes
+    foreach ($profile in $profiles) {
+        Write-Host " - Scanning $($profile.Name)..." -ForegroundColor Gray
+        $sizeInfo = Get-FolderSize -Path $profile.FullName
+        
+        $userProfiles += [PSCustomObject]@{
+            Index      = $userProfiles.Count + 1
+            Username   = $profile.Name
+            Path       = $profile.FullName
+            Size       = $sizeInfo.SizeString
+            Bytes      = $sizeInfo.Bytes
+        }
+    }
+    
+    # --- Display the Menu ---
+    Clear-Host
+    Write-Host "--- User Profile Manager ---" -ForegroundColor Yellow
+    Write-Host "Select a user profile to delete:`n"
+    
+    # Display the sorted list (largest first)
+    $userProfiles | Sort-Object -Property Bytes -Descending | Format-Table -Property Index, Username, Size -AutoSize
+    
+    Write-Host "`n  Q. Quit"
+    
+    # --- Get User Selection ---
+    $choice = Read-Host "`nEnter your choice (number)"
+    
+    if ($choice.ToLower() -eq 'q') {
+        Write-Host "Exiting."
+        break
+    }
+    
+    # Find the selected user by their index
+    $selectedUser = $userProfiles | Where-Object { $_.Index -eq $choice }
+    
+    if (-not $selectedUser) {
+        Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+        Start-Sleep -Seconds 2
+        continue
+    }
+    
+    # --- Confirmation Step ---
+    Clear-Host
+    Write-Host "--- ! DANGER ! ---" -ForegroundColor Red
+    Write-Host "You are about to permanently delete the following user profile:"
+    Write-Host "Username: $($selectedUser.Username)"
+    Write-Host "Path:     $($selectedUser.Path)"
+    Write-Host "Size:     $($selectedUser.Size)"
+    Write-Host "`nThis will remove ALL user data (Desktop, Documents, Downloads, etc.)"
+    Write-Host "This action CANNOT be undone."
+    
+    $confirmation = Read-Host "`nType the username '$($selectedUser.Username)' exactly to confirm deletion"
+    
+    if ($confirmation -ne $selectedUser.Username) {
+        Write-Host "Confirmation failed. Deletion cancelled." -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+        continue
+    }
+    
+    # --- Final Confirmation ---
+    $finalConfirm = Read-Host "Are you absolutely sure? (Y/N)"
+    
+    if ($finalConfirm.ToLower() -ne 'y') {
+        Write-Host "Deletion cancelled." -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+        continue
+    }
+    
+    # --- Deletion Process ---
+    Write-Host "`nAttempting to delete profile using WMI (preferred method)..." -ForegroundColor Cyan
+    try {
+        # Get the WMI object for the profile and call its Delete() method
+        # This handles registry cleanup as well as folder deletion.
+        $wmiProfile = Get-WmiObject -Class Win32_UserProfile | Where-Object { $_.LocalPath -eq $selectedUser.Path }
+        
+        if ($wmiProfile) {
+            $wmiProfile.Delete()
+            Write-Host "Successfully deleted profile for $($selectedUser.Username)." -ForegroundColor Green
+        } else {
+            Write-Host "Could not find WMI profile. Attempting manual folder deletion..." -ForegroundColor Yellow
+            Remove-Item -Path $selectedUser.Path -Recurse -Force -ErrorAction Stop
+            Write-Host "Successfully deleted folder: $($selectedUser.Path)" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "An error occurred during deletion: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "The folder or some files may still exist."
+    }
+    
+    Write-Host "`nPress Enter to return to the menu."
+    Read-Host | Out-Null
+}
